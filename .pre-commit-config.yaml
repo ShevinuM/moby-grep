@@ -1,0 +1,30 @@
+# Run with prek (https://prek.j178.dev/) or pre-commit.
+#
+# The hooks are local and call `uv run`, so they use the tool versions in
+# uv.lock: ruff's exact pin has one source of truth, and mypy sees the
+# pydantic plugin without a separate dependency list. `--locked` makes a hook
+# fail on a stale uv.lock instead of rewriting it during a commit.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --locked ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --locked ruff check
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: mypy
+        name: mypy
+        entry: uv run --locked mypy
+        language: system
+        # mypy's own configuration and the stubs it sees can change the result.
+        files: ^(src/|tests/|pyproject\.toml$|uv\.lock$)
+        # Without this mypy is handed only the staged paths and ignores the
+        # `files` setting in pyproject.toml.
+        pass_filenames: false

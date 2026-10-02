@@ -1,0 +1,126 @@
+[project]
+name = "mobygrep"
+version = "0.1.0"
+description = "Detects whale calls in live hydrophone audio and makes them searchable."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+# The small set every program shares. Nothing ML is installed from here.
+dependencies = [
+    "alembic>=1.20.0",
+    "boto3>=1.43.0",
+    "fastapi>=0.142.2",
+    # API only: a no-op until the SDK is added.
+    "opentelemetry-api>=1.45.0",
+    "pgvector>=0.5.0",
+    "prometheus-client>=0.26.0",
+    "psycopg[binary]>=3.3.6",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "redis>=8.1.0",
+    "sqlalchemy[asyncio]>=2.1.2",
+    "structlog>=26.1.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.optional-dependencies]
+# Reserved for the model runtime. Extras are not installed by a bare
+# `uv sync`, which keeps ML packages out of CI's fast path and out of the
+# programs that do not run the model.
+inference = []
+
+[project.scripts]
+mobygrep-ingestor = "mobygrep.ingestion.main:main"
+mobygrep-worker = "mobygrep.detection.main:main"
+mobygrep-api = "mobygrep.search.main:main"
+mobygrep-admin = "mobygrep.admin.cli:main"
+
+[dependency-groups]
+dev = [
+    "fakeredis>=2.39.0",
+    "import-linter>=2.15",
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    # Exact pin: a new ruff release can change formatting and enabled rules.
+    "ruff==0.16.10",
+    "testcontainers>=4.15.0",
+    "types-boto3[s3]>=1.43.0",
+]
+# Reserved.
+training = []
+
+[build-system]
+requires = ["uv_build>=0.12.22,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# The three platforms the project runs on: the developer machine, the
+# production server and CI, and Linux containers on Apple Silicon.
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+# Explicit: recent ruff releases enable several hundred rules by default.
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "DTZ", "LOG", "G", "PT", "TC", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+markers = [
+    "integration: needs Docker",
+    "r2: needs real R2 credentials",
+]
+
+[tool.alembic]
+# The migrations ship inside the package.
+script_location = "%(here)s/src/mobygrep/shared/db/migrations"
+
+[tool.importlinter]
+root_package = "mobygrep"
+include_external_packages = true   # required to forbid onnxruntime / tensorflow
+
+[[tool.importlinter.contracts]]
+name = "Programs are independent; inference sits above shared"
+type = "layers"
+containers = ["mobygrep"]
+layers = [
+    "ingestion | detection | search | admin",   # `|` = same layer, independent of each other
+    "inference",
+    "shared",
+]
+# A new top-level package must be given a layer here, or this contract fails.
+exhaustive = true
+
+[[tool.importlinter.contracts]]
+name = "Ingestion and admin do not use inference"
+type = "forbidden"
+source_modules = ["mobygrep.ingestion", "mobygrep.admin"]
+forbidden_modules = ["mobygrep.inference"]
+
+[[tool.importlinter.contracts]]
+name = "ML runtimes are imported only inside inference"
+type = "forbidden"
+source_modules = [
+    "mobygrep.shared", "mobygrep.ingestion", "mobygrep.detection",
+    "mobygrep.search", "mobygrep.admin",
+]
+forbidden_modules = ["onnxruntime", "tensorflow"]
+# The rule is about direct imports: detection -> inference -> onnxruntime is allowed.
+allow_indirect_imports = true
