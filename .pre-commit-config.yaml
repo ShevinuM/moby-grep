@@ -11,7 +11,9 @@ repos:
         name: ruff format
         entry: uv run --locked ruff format
         language: system
-        types_or: [python, pyi]
+        # Markdown too: ruff formats the Python code blocks in the documents,
+        # and CI checks them.
+        types_or: [python, pyi, markdown]
         require_serial: true
       - id: ruff-check
         name: ruff check
