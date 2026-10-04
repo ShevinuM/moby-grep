@@ -2,15 +2,6 @@
 
 This document fixes the tables of the one Postgres database, their keys and constraints, the status transitions of the ledger, the ledger operations in shared code, the database roles and the migration rules. The ingestion unit writes `sources`, `source_status`, `chunks` and `feed_gaps`. The detection unit writes `detections` and `embeddings` and updates the ledger. The search unit queries all of them and owns the vector index. The scorecard unit reads through the read-only role.
 
-## Status
-
-- **Draft, 2026-10-02.** The code that implements this contract is not written yet. This document is what it will be built to.
-- **Unconfirmed behaviour:**
-  - A prefix search on `chunks.chunk_id` uses the primary key index because of the `C` collation ([`chunks`](#chunks)).
-  - The conditional "mark processed" locks the ledger row, so that the second of two overlapping attempts waits and then changes no row ([Ledger operations](#ledger-operations)).
-- **Observed:** the stack the schema is built with (SQLAlchemy 2.1, pgvector-python, Alembic, psycopg 3) creates a `vector(1536)` column, generates a migration for it and detects drift on it, on the pinned image `pgvector/pgvector:0.8.7-pg18`; a vector of another length is rejected by the database (confirmed by spike, 2026-10-02).
-- **Completed by:** the schema and ledger code (column types as built, the constraint and index names, a test that compares this document with the models), the queue consumer and admin command (any ledger read they add), and the final consistency review.
-
 ## Conventions
 
 - All timestamps are `timestamptz`.

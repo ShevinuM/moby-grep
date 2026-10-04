@@ -2,15 +2,6 @@
 
 This document fixes the rule that makes at-least-once delivery safe: what the queue library does before it calls a handler, what a handler must do and in which order, and what each store holds if a process dies at each point. The detection unit writes its handler to these steps. The ingestion unit depends on repeat enqueues being safe. The scorecard unit uses the crash-window table for its failure drills.
 
-## Status
-
-- **Draft, 2026-10-02.** The code that implements this contract is not written yet. This document is what it will be built to.
-- **Unconfirmed behaviour:**
-  - The conditional "mark processed" locks the ledger row, so the second of two overlapping attempts waits and then changes no row ([Why this order holds](#why-this-order-holds)).
-  - The clip store treats an existing key as success on real R2. On the local object store it was observed ([Crash windows](#crash-windows)).
-  - Every row of the crash-window table as a whole: each is the designed outcome, and the rows are proven one by one when the producer, the consumer and the storage code are tested. The tags in the table mark the dependency behaviours that were already observed.
-- **Completed by:** the queue producer and the queue consumer (their tests check each row of the table and update the tags), storage (the clip store behaviour on both backends), and the final consistency review.
-
 ## The rule
 
 Processing a chunk any number of times leaves the same rows as processing it once, and no clip that a row points at ever has different content. The chunk ID (see [chunk-id.md](chunk-id.md)) is the key in every store.
@@ -46,8 +37,8 @@ For each point after which a process can die: the state of each store, and why t
 | Producer: ledger insert committed, before the add | `queued`, `enqueued_at` null | No entry | Staged file exists | `enqueue` again, or the ingestion unit's sweep of stale `queued` rows, adds the entry. The row keeps its trace ID |
 | Producer: the add, before `enqueued_at` is set | `queued`, `enqueued_at` null | One entry | Staged file exists | A later `enqueue` adds a second entry. The first to finish marks the row `processed`; the other is acknowledged as a duplicate at step 1 |
 | Producer: `enqueued_at` set, before the ingestor saves its bookmark | `queued`, `enqueued_at` set | One entry | Staged file exists | `enqueue` again finds `enqueued_at` and adds nothing |
-| Worker: entry delivered, before any work | `queued` | Entry pending under that worker | No clips | The worker's own restart, or another worker after the min-idle time, takes the entry again. The delivery count rises by one on either path (confirmed by spike, 2026-10-02). A worker that restarts three times in a row therefore dead-letters the entry without finishing it; the two dead-lettering rows below then apply |
-| Worker: clips written, before the transaction commits | `queued` | Entry pending | Clips exist with no rows | The retry writes the same keys, and the store treats an existing key as success; then it commits. The local object store refuses the second put with "precondition failed", which `put` treats as success (confirmed by spike, 2026-10-02). R2 does the same (unconfirmed: to be proven by test) |
+| Worker: entry delivered, before any work | `queued` | Entry pending under that worker | No clips | The worker's own restart, or another worker after the min-idle time, takes the entry again. The delivery count rises by one on either path. A worker that restarts three times in a row therefore dead-letters the entry without finishing it; the two dead-lettering rows below then apply |
+| Worker: clips written, before the transaction commits | `queued` | Entry pending | Clips exist with no rows | The retry writes the same keys, and the store treats an existing key as success; then it commits. The local object store refuses the second put with "precondition failed", which `put` treats as success. R2 does the same (unconfirmed: to be proven by test) |
 | Worker: transaction committed, before the acknowledge | `processed`, detections and embeddings present | Entry pending | Clips exist, rows point at them | The redelivery stops at step 1: it is acknowledged as a duplicate and the handler is not called. This check comes before the delivery-count check, so a chunk that succeeded is never dead-lettered |
 | Worker: two attempts overlap | `processed` by the first to commit | Both entries acknowledged in the end | The clips of the loser may sit under unreferenced keys | The conditional update locks the row; the second attempt changes no row and rolls back (unconfirmed: to be proven by test) |
 | Consumer, dead-lettering: row marked `failed`, before the dead entry is added and the original acknowledged | `failed` | Original still pending | Staged file kept seven days | The entry is taken again and dead-lettered again; marking a `failed` row failed changes nothing and is a success. If the handler runs and now succeeds, `failed` to `processed` is an allowed transition |

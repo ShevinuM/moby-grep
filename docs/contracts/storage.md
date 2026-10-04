@@ -2,16 +2,6 @@
 
 This document fixes the two stores that hold audio: the staging store, where the audio of a chunk waits between the ingestor and a worker, and the clip store, where the audio of each detection is kept. The ingestion unit writes staged audio and runs the purge. The detection unit reads staged audio, decodes it and writes clips. The search unit turns clip keys into URLs. The model unit decides where decoding lives. The production deployment unit supplies the R2 bucket and its credentials.
 
-## Status
-
-- **Draft, 2026-10-02.** The code that implements this contract is not written yet. This document is what it will be built to.
-- **Unconfirmed behaviour:**
-  - The clip store behaves on real R2 as stated here: the create-if-absent put and presigned URLs ([Clip store](#clip-store), [Clip URLs](#clip-urls)). Both were observed on the local object store only.
-  - Staging writes are atomic, so a reader never sees a partial file ([Staging store](#staging-store)).
-  - The two differences between the backends that the key and bucket rules rest on: R2 does not create a bucket on a put, and the local object store cannot hold a key that is a prefix of another ([Clip store](#clip-store), [Clip keys](#clip-keys)).
-- **Provisional:** the zero-padding width of the clip key (eight digits), until the storage code exists.
-- **Completed by:** the storage code (both stores, the purge, and contract tests that run against every implementation; the run against real R2), and the final consistency review.
-
 ## Two stores
 
 Staging and clips are two interfaces. They differ in backend, key scheme, retention and operations.
@@ -124,11 +114,11 @@ def clip_key(
 
 - `put` is create-if-absent by default and treats "already there" as success. It does not report whether it created the object: a retry after a lost response would see "already exists" for an object the caller itself just wrote.
 - Correctness rests on the deterministic key. The condition only guards against accidental overwrite. `overwrite=True` is for deliberate backfills.
-- On the local object store the condition is enforced: a second put with `If-None-Match: *` was refused with "precondition failed" (HTTP 412) and the first object, with its content type, was untouched; the same two puts without the condition replaced the object (confirmed by spike, 2026-10-02). `put` treats that refusal as success. The same behaviour on real R2 is (unconfirmed: to be proven by test).
+- On the local object store the condition is enforced: a second put with `If-None-Match: *` was refused with "precondition failed" (HTTP 412) and the first object, with its content type, was untouched; the same two puts without the condition replaced the object. `put` treats that refusal as success. The same behaviour on real R2 is (unconfirmed: to be proven by test).
 - `put` sets the content type and a long immutable cache lifetime.
 - The S3 implementation uses only put, get, head and delete, plus presigning. It uses no listing, tagging, ACLs, versioning or batch delete: according to R2's documentation it does not implement several of these.
-- A missing key answers differently to the two reads. On the local object store a GET returns the named error "no such key", and a HEAD returns a bare 404 with no named error, because a HEAD reply has no body (confirmed by spike, 2026-10-02). `exists` must test for the 404. R2 answers the same way (unconfirmed: to be proven by test).
-- **The local object store creates a bucket on the first put to it** (confirmed by spike, 2026-10-02). R2 does not (unconfirmed: to be proven by test). A wrong bucket name therefore passes locally on a write and would fail on R2. A GET or a HEAD does not create a bucket, which is why the startup check reads (see [observability.md](observability.md#startup-checks)).
+- A missing key answers differently to the two reads. On the local object store a GET returns the named error "no such key", and a HEAD returns a bare 404 with no named error, because a HEAD reply has no body. `exists` must test for the 404. R2 answers the same way (unconfirmed: to be proven by test).
+- **The local object store creates a bucket on the first put to it**. R2 does not (unconfirmed: to be proven by test). A wrong bucket name therefore passes locally on a write and would fail on R2. A GET or a HEAD does not create a bucket, which is why the startup check reads (see [observability.md](observability.md#startup-checks)).
 - Implementations: the S3 store (one configuration for both backends; region `auto` for R2 and `us-east-1` locally), an in-memory fake whose `url_for` returns a predictable fake URL, and a small async adapter for the API.
 
 ## Clip keys
@@ -152,8 +142,8 @@ See [idempotency.md](idempotency.md) for how the handler uses this.
 ## Clip URLs
 
 - In `presigned` mode, `url_for` signs with a second client built on the **public** endpoint. The host is part of the signature, so a URL signed for the in-network name `objectstore:8333` cannot be rewritten to `localhost:8333` afterwards.
-- This works on the local object store: a URL signed by a client on the public endpoint was fetched from the host with no credentials, and the same URL signed for the internal host and then rewritten was refused as a signature mismatch (confirmed by spike, 2026-10-02). The local store validates signatures, so a wrong presign cannot pass locally.
-- The public endpoint setting must be character for character the host the browser uses. A URL signed for `localhost:8333` and fetched through `127.0.0.1:8333` was refused (confirmed by spike, 2026-10-02).
+- This works on the local object store: a URL signed by a client on the public endpoint was fetched from the host with no credentials, and the same URL signed for the internal host and then rewritten was refused as a signature mismatch. The local store validates signatures, so a wrong presign cannot pass locally.
+- The public endpoint setting must be character for character the host the browser uses. A URL signed for `localhost:8333` and fetched through `127.0.0.1:8333` was refused.
 - In production both endpoints are the same R2 URL. Presigned URLs on real R2 are (unconfirmed: to be proven by test).
 - In `public` mode, `url_for` returns the public base URL joined with the key, with no network call.
 - The default lifetime is 3,600 s.

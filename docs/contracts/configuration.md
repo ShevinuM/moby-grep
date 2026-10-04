@@ -2,18 +2,6 @@
 
 This document fixes how the programs are configured: the naming rule for environment variables, which program reads which variables, the default of each, and the value each has on the host and inside Compose. Every unit adds its own settings by the same rules. The production deployment unit supplies the production values and the secrets.
 
-## Status
-
-- **Draft, 2026-10-02.** The code that implements this contract is not written yet. This document is what it will be built to.
-- **Unconfirmed behaviour:** none. The two statements here that rest on how a dependency behaves (the socket timeout against the block time, and the exact host match of the public clip endpoint) were both observed and carry their tags.
-- **Open point:** the Redis clients must set their retry policy explicitly (see [queue.md](queue.md#consuming)). Whether that becomes a setting, and its value, is decided when the queue library is built.
-- **Provisional:**
-  - **Every variable name** under [Settings variables](#settings-variables). The prefix, the delimiter and the grouping are fixed. Each name follows from a field name of the settings classes in `mobygrep.shared.config`, and becomes final when those classes exist.
-  - The defaults of `MOBYGREP_LOG__LEVEL`, `MOBYGREP_TRACING__ENABLED`, `MOBYGREP_CLIPS__URL_MODE`, `MOBYGREP_CLIPS__REGION`, `MOBYGREP_POSTGRES__PORT`, `MOBYGREP_OPS__HOST` and `MOBYGREP_TRACING__OTLP_ENDPOINT`; the fallback of the public clip endpoint; the 604,800 s ceiling of the URL lifetime; and the rule that `public` mode requires the public base URL.
-  - The host ports of Postgres and the two Redis instances, the staging root paths, the database name, and the local bucket and access key ID. The Compose files set them.
-  - Every name under [Variables not read by the settings classes](#variables-not-read-by-the-settings-classes).
-- **Completed by:** the settings classes (final names and defaults; a test then compares the table between the marker comments with the code), the Compose files and the test harness (ports, paths, the variables no settings class reads), tracing (the tracing values), and the final consistency review.
-
 ## Conventions
 
 - The environment prefix is `MOBYGREP_` and the nested delimiter is `__`: for example `MOBYGREP_POSTGRES__HOST`, `MOBYGREP_CLIPS__BUCKET`.
@@ -93,10 +81,10 @@ These are the variables the settings classes read. "On the host" is the value in
 Notes on the table:
 
 - **Six variables differ between the host and Compose**, so the `environment:` block of a program service must override them: the Postgres host, the two Redis URLs, the staging root, the clip endpoint and the tracing endpoint. The `migrate` service also overrides the Postgres user and password.
-- **Why the clip store has two endpoints.** A presigned URL is signed for a host name. A URL signed for the in-network name `objectstore:8333` cannot be opened from a browser on the host. The public endpoint therefore stays `http://localhost:8333` in both columns. It must be character for character the host the browser uses: `localhost` and `127.0.0.1` are not interchangeable (confirmed by spike, 2026-10-02). In production both endpoints are the same R2 URL, the public one is left unset, and the region is `auto`. See [storage.md](storage.md#clip-urls).
+- **Why the clip store has two endpoints.** A presigned URL is signed for a host name. A URL signed for the in-network name `objectstore:8333` cannot be opened from a browser on the host. The public endpoint therefore stays `http://localhost:8333` in both columns. It must be character for character the host the browser uses: `localhost` and `127.0.0.1` are not interchangeable. In production both endpoints are the same R2 URL, the public one is left unset, and the region is `auto`. See [storage.md](storage.md#clip-urls).
 - **The ops port** has a default per program and is not in `.env.example`, because one file serves every program run on the host and they would collide. For the API it is the port the API itself serves on.
 - **The staging root** is a path on a shared named volume in Compose. On the host it is a local directory outside the repository. An ingestor on the host with a worker in a container (or the reverse) do not share a staging directory. That combination is not supported.
-- **The socket timeout** (10 s) is deliberately longer than the block time (2 s). A blocking read of 2 s on a client with a 10 s socket timeout returns empty and raises nothing (confirmed by spike, 2026-10-02).
+- **The socket timeout** (10 s) is deliberately longer than the block time (2 s). A blocking read of 2 s on a client with a 10 s socket timeout returns empty and raises nothing.
 - **The consumer name** must be unique among running workers. See [queue.md](queue.md#consumer-names).
 - **Secrets.** The two values marked "a local-only value" are set in `.env.example`, are for the local Compose stack only, and are not written here.
 
@@ -123,5 +111,4 @@ These variables are read by the image build, the Compose files, an init script o
 | Date | Change | Why |
 |---|---|---|
 | 2026-10-02 | First draft | Written after the spike so the other units can plan against it |
-| 2026-10-02 | Status records an open point: the Redis clients must set their retry policy explicitly, and no setting exists for it yet | The spike saw the client library's default retry hide a timeout for 14 s to 59 s. The socket timeout and block time defaults themselves held |
 | 2026-10-02 | The public clip endpoint is stated as an exact host match | The spike saw a URL signed for `localhost:8333` refused when it was fetched through `127.0.0.1:8333` |

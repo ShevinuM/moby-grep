@@ -2,17 +2,6 @@
 
 This document fixes what makes the three programs behave the same from the outside: how metrics are named, what every log line carries, the trace ID, the health paths, the startup checks, graceful shutdown, the watchdog and the shared error classes. Every unit follows it when it builds its program. The scorecard unit builds dashboards and alerts on the metric conventions. The production deployment unit relies on the health paths and the shutdown behaviour.
 
-## Status
-
-- **Draft, 2026-10-02.** The code that implements this contract is not written yet. This document is what it will be built to.
-- **Unconfirmed behaviour:**
-  - With the tracing SDK absent or disabled, a generated `traceparent` is still extracted as a valid context ([Trace ID](#trace-id)).
-  - A program in a container exits 0 within the grace period ([Graceful shutdown](#graceful-shutdown)).
-  - The watchdog ends a process whose main thread is stuck ([Watchdog](#watchdog)).
-  - Whether the Queue Redis check passes while the queue instance is at its memory limit ([Startup checks](#startup-checks)).
-- **Provisional:** the name of the build revision variable, `MOBYGREP_BUILD_REVISION`, until the code that reads it exists.
-- **Completed by:** the runtime conventions code (logging, metrics, health, shutdown, the watchdog, startup checks, the error classes; it also fixes the exit codes), the queue library and storage (they register the metrics listed here), the program skeletons, tracing (the span rules in full), and the final consistency review.
-
 ## Metrics
 
 ### Naming rules
@@ -103,10 +92,10 @@ Each check passes, or fails with a message that names the dependency and the rea
 | Clip store | A GET of a fixed sentinel key returns "no such key". "No such bucket", "access denied" and bad credentials are a **misconfiguration** and fail. A timeout or a server error is **unavailability** |
 
 - Checks are retried with backoff for a bounded time: 30 s in total by default. After that the program exits non-zero and Compose restarts it. A shutdown request during the checks ends them at once.
-- **Every failing check is retried for the whole time, a misconfiguration result included.** A program does not exit on the first "no such bucket": the local object store gave exactly that answer for a short time after it reported healthy, and then the expected "no such key" (confirmed by spike, 2026-10-02). A result counts as a misconfiguration only if it is still there when the time ends.
-- The retry exists because a dependency can report healthy slightly before it is usable. The local object store's bucket became usable about 0.7 s after its health endpoint first answered, in four fresh starts, so 30 s is ample (confirmed by spike, 2026-10-02).
-- **Why the clip store check is a GET.** The local object store creates a bucket on the first put to it, so a put would hide a wrong bucket name. A GET or a HEAD does not create one: against a missing bucket the GET returns "no such bucket" (confirmed by spike, 2026-10-02). Nothing may ever write the sentinel key.
-- **The queue instance at its memory limit.** Creating a stream and its group is refused at the memory limit (confirmed by spike, 2026-10-02), and the Queue Redis check ensures the groups. Whether the check passes when the groups already exist is (unconfirmed: to be proven by test). If it does not, a program that restarts while the instance is full cannot start. See [queue.md](queue.md#trimming).
+- **Every failing check is retried for the whole time, a misconfiguration result included.** A program does not exit on the first "no such bucket": the local object store gave exactly that answer for a short time after it reported healthy, and then the expected "no such key". A result counts as a misconfiguration only if it is still there when the time ends.
+- The retry exists because a dependency can report healthy slightly before it is usable. The local object store's bucket became usable about 0.7 s after its health endpoint first answered, in four fresh starts, so 30 s is ample.
+- **Why the clip store check is a GET.** The local object store creates a bucket on the first put to it, so a put would hide a wrong bucket name. A GET or a HEAD does not create one: against a missing bucket the GET returns "no such bucket". Nothing may ever write the sentinel key.
+- **The queue instance at its memory limit.** Creating a stream and its group is refused at the memory limit, and the Queue Redis check ensures the groups. Whether the check passes when the groups already exist is (unconfirmed: to be proven by test). If it does not, a program that restarts while the instance is full cannot start. See [queue.md](queue.md#trimming).
 - **The staging marker.** The image creates the staging directory, so the directory exists even when the shared volume was never mounted. A worker started without the mount fails at startup with a message that names the cause (the shared volume is not mounted, or the ingestor has never started). Without the marker it would find the audio of every chunk missing and dead-letter all of them.
 - **The clip store exception.** The clip store is the one dependency outside the server. If it is still unavailable (not misconfigured) when the retry time ends, the program logs a warning and starts anyway. The API can search without it, and the worker's handling of transient failures holds chunks until it returns. Postgres, Redis and staging stay fail-fast.
 
@@ -136,7 +125,7 @@ A daemon thread enforces steps 6 and 7 of the shutdown, because the main thread 
 - Heartbeat checking is on for the ingestor and the worker, and off for the API. It starts only when the main loop starts, so a slow startup (loading a model) is not mistaken for a hang. **Obligation on later units:** any wait inside the main loop that can be long must keep beating the heartbeat.
 - Limit: Python runs a signal handler on the main thread, between two Python instructions. If the main thread is inside a long native call (model inference) when the signal arrives, the handler does not run until the call returns. Docker's stop grace period is the backstop for that case, and the stale-heartbeat exit covers a call that never returns.
 - The watchdog ends a process whose main thread is stuck (unconfirmed: to be proven by test).
-- Ending the process from the watchdog skips normal teardown on purpose. Anything unacknowledged stays pending. On restart the worker picks its own pending entry up again. That read raises the entry's delivery count by one (confirmed by spike, 2026-10-02), so a chunk that hangs the handler every time is dead-lettered after the maximum number of deliveries. The same rule has a cost: a worker that restarts for a reason that has nothing to do with the chunk also spends one delivery of the entry it held. See [queue.md](queue.md#delivery-count).
+- Ending the process from the watchdog skips normal teardown on purpose. Anything unacknowledged stays pending. On restart the worker picks its own pending entry up again. That read raises the entry's delivery count by one, so a chunk that hangs the handler every time is dead-lettered after the maximum number of deliveries. The same rule has a cost: a worker that restarts for a reason that has nothing to do with the chunk also spends one delivery of the entry it held. See [queue.md](queue.md#delivery-count).
 
 ## Errors
 

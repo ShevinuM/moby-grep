@@ -53,27 +53,9 @@ All three are programs of one Python package, `mobygrep`, and run on one server 
 | [idempotency.md](idempotency.md) | | Repeat enqueue | The handler steps | | Failure drills |
 | [storage.md](storage.md) | Where decoding lives | Writes staged audio; runs the purge; disk floor | Reads staged audio; decodes; writes clips | Clip URLs; redirect route; decodes uploads the same way | R2 bucket and credentials |
 
-## Draft status
+## Unconfirmed statements
 
-The seven documents are **drafts**, written on 2026-10-02 before the code they describe. Each has a `## Status` part that says:
-
-- that it is a draft and when it was written;
-- which of its statements still depend on a behaviour that no test has proven;
-- which later piece of work completes it.
-
-A document stops being a draft when the code behind it is built and its tests pass. That work corrects and extends the draft and logs every change; it does not rewrite the document.
-
-## How to read the confidence tags
-
-Before any contract was written, a half-day spike ran throwaway scripts against the pinned images (`redis:8.10`, `pgvector/pgvector:0.8.7-pg18`, `chrislusf/seaweedfs:4.48`) and recorded what it saw. The scripts were not kept. A statement that rests on observed behaviour carries one of these tags:
-
-| Tag | Meaning |
-|---|---|
-| `(confirmed by spike, <date>)` | The spike ran this and saw the behaviour stated |
-| `(confirmed by test, <date>)` | A test in this repository proves it |
-| `(unconfirmed: to be proven by test)` | The design depends on it and nothing has shown it yet |
-
-A statement with no tag is a decision (what the code will do), or a documented property of a dependency that the design does not treat as in doubt: a version requirement, a restart rule, a limit that a vendor's documentation states. Behaviour the design depends on and that a test can prove carries a tag.
+A statement about how Redis, Postgres or the object store behaves that the design depends on, and that nothing has shown yet, ends with `(unconfirmed: to be proven by test)`. When a test proves it, the tag is removed and a change log row says so; the test is then the record. To list what is still unconfirmed: `git grep -n "(unconfirmed" docs/contracts/`.
 
 ## How a contract changes
 

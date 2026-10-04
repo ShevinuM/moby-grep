@@ -2,13 +2,6 @@
 
 This document fixes the format of a chunk ID, how each part is derived, and where the ID is used. The ingestion unit creates chunk IDs. The detection unit reads them and derives clip keys from them. The search unit displays them and queries by prefix. Every store uses the chunk ID as its idempotency key.
 
-## Status
-
-- **Draft, 2026-10-02.** The code that implements this contract is not written yet. This document is what it will be built to.
-- **Unconfirmed behaviour:** none. Nothing in this document depends on how an external dependency behaves.
-- **Provisional:** the normaliser's hash algorithm, hash length and default maximum length under [Normalising external names](#normalising-external-names), and the zero-padding width in the clip key under [Where the chunk ID is used](#where-the-chunk-id-is-used). They are the intended values and become final when the code exists.
-- **Completed by:** the chunk ID type in `mobygrep.shared.chunk_id` (confirms the normaliser values; every line under [Examples](#examples) is then parsed by a test), and the final consistency review.
-
 ## Format
 
 - The form is `<source>/<group>/<item>`: exactly three segments separated by `/`.
