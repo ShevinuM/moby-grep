@@ -4,6 +4,8 @@ What if you could search a whale call? MobyGrep listens to live underwater micro
 
 It is one Python codebase that runs as three programs (an ingestor, detection workers and a search API) around a Redis Stream and one Postgres database, on a single server under Docker Compose.
 
+My goal is to help researchers advance their research on marine bioacoustics and cetacean communication. 
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/) 0.12.22. uv installs Python 3.13 by itself.
