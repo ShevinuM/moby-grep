@@ -1,8 +1,8 @@
 # MobyGrep
 
-This is a completely open source search engine for all the whale calls in the world. My goal is to help researchers advance their research on marine bioacoustics and cetacean communication. 
+What if you could search a whale call? MobyGrep listens to live underwater microphones (hydrophones) and runs the audio through Perch 2.0, a pretrained bioacoustics model, to turn each sound into a numeric fingerprint. A classifier trained on expert-labeled Orcasound recordings decides whether it’s a whale call, and every call becomes searchable by similarity in Postgres with pgvector. Accuracy is measured against OrcaHello, the existing open-source orca detector.
 
-MobyGrep listens to live underwater microphones (hydrophones), detects whale calls in the audio, turns each call into a numeric fingerprint, and makes the calls searchable. It is one Python codebase that runs as three programs (an ingestor, detection workers and a search API) around a Redis Stream and one Postgres database, on a single server under Docker Compose.
+It is one Python codebase that runs as three programs (an ingestor, detection workers and a search API) around a Redis Stream and one Postgres database, on a single server under Docker Compose.
 
 ## Development
 
