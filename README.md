@@ -1,8 +1,10 @@
 # MobyGrep
 
-MobyGrep listens to live underwater microphones (hydrophones), detects whale calls in the audio, turns each call into a numeric fingerprint, and makes the calls searchable. It is one Python codebase that runs as three programs (an ingestor, detection workers and a search API) around a Redis Stream and one Postgres database, on a single server under Docker Compose. Its focus is backend reliability, and the aim is to back that with published speed, uptime and accuracy numbers.
+What if you could search a whale call? MobyGrep listens to live underwater microphones (hydrophones) and runs the audio through Perch 2.0, a pretrained bioacoustics model, to turn each sound into a numeric fingerprint. A classifier trained on expert-labeled Orcasound recordings decides whether it’s a whale call, and every call becomes searchable by similarity in Postgres with pgvector. Accuracy is measured against OrcaHello, the existing open-source orca detector.
 
-**Status: foundation in progress.** The repository is tooled and the package is empty. Nothing runs yet.
+It is one Python codebase that runs as three programs (an ingestor, detection workers and a search API) around a Redis Stream and one Postgres database, on a single server under Docker Compose.
+
+My goal is to help researchers advance their research on marine bioacoustics and cetacean communication. 
 
 ## Development
 
@@ -17,14 +19,6 @@ uv run lint-imports      # the import rules between package areas
 uv run pytest
 ```
 
-### Git hooks
-
-The hooks run ruff format, ruff check and mypy through `uv run`, so they use the versions in `uv.lock`. Run them with [prek](https://prek.j178.dev/), a drop-in replacement for pre-commit that reads the same `.pre-commit-config.yaml`:
-
-```sh
-uv tool install prek
-prek install
-```
 
 ## Licence
 
