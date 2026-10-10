@@ -34,12 +34,12 @@ Stream entries are flat maps from string to string.
 | `v` | Schema version, `1` |
 | `chunk_id` | The chunk ID (see [chunk-id.md](chunk-id.md)) |
 | `kind` | `live`, `archive` or `reference` |
-| `audio_key` | Key of the staged audio (see [storage.md](storage.md#staging-store)) |
+| `staged_audio_key` | Key of the staged audio (see [storage.md](storage.md#staging-store)) |
 | `started_at` | ISO-8601 UTC; empty when unknown |
 | `duration_ms` | Empty when unknown |
 | `enqueued_at` | ISO-8601 UTC |
 | `traceparent` | W3C trace context; always present (see [observability.md](observability.md#trace-id)) |
-| `label` | Optional known species label |
+| `known_species_id` | Optional ID of the known species, for reference audio (see [schema.md](schema.md#species)) |
 
 - Audio bytes are never put on the stream. The message points at the staged file.
 - Every field can be rebuilt from the ledger row of the chunk. That is what lets the admin command requeue a chunk.
@@ -318,3 +318,4 @@ Each limit is recorded here; none is solved yet.
 | 2026-10-02 | Trimming and Consuming: the two shapes of an entry whose payload was trimmed (an empty field map on a history read; a deleted ID on a reclaim), both counted as lost | The spike recorded the reply shapes. The design described one case with no shape |
 | 2026-10-02 | Trimming: the dead stream can sit above its cap | The spike saw the approximate form remove only whole blocks under the default policy, which the dead stream uses |
 | 2026-10-02 | Producing: "Redis unavailable or out of memory" names the error the client raises at the memory limit | The spike saw `redis.exceptions.OutOfMemoryError` for a refused add |
+| 2026-10-10 | Message fields renamed: `audio_key` to `staged_audio_key`, `label` to `known_species_id` | They follow the ledger columns, from which every field is rebuilt |

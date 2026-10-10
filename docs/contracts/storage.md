@@ -60,8 +60,8 @@ Decoding, mixing down to mono, resampling to the model's rate and any normalisat
 
 ## Retention and purge
 
-- Staged audio of a `processed` chunk is deleted once 48 hours have passed since `completed_at`.
-- Staged audio of a `failed` chunk is kept 7 days since `completed_at`. A failed chunk can be requeued only while its audio exists, and the people who would requeue it may not notice a failure within two days.
+- Staged audio of a `processed` chunk is deleted once 48 hours have passed since `settled_at`.
+- Staged audio of a `failed` chunk is kept 7 days since `settled_at`. A failed chunk can be requeued only while its audio exists, and the people who would requeue it may not notice a failure within two days.
 - **Audio of a chunk that is still `queued` is never deleted by age.** A backlog must not eat its own input.
 - A file with no ledger row at all is an orphan. It is deleted once it is older than the orphan retention (7 days).
 - The three retention periods and the disk floor below are settings (see [configuration.md](configuration.md#settings-variables)).
@@ -134,7 +134,7 @@ def clip_key(
 A clip is a deterministic cut of the staged audio. The same key therefore always holds the same content, whichever attempt wrote it.
 
 - This is what makes "create only if absent" safe: an attempt that finds the key taken can use the object that is there.
-- An attempt that cuts differently (another detector, for example) gets a different key.
+- An attempt that cuts differently (another model version, for example) gets a different key.
 - Objects written by an attempt that later lost stay in the store with no row pointing at them. They are not cleaned up: the store interface has no listing operation, and the waste is a few clips for each rare event.
 
 See [idempotency.md](idempotency.md) for how the handler uses this.
@@ -169,3 +169,4 @@ The last two are both `TransientError` for a handler: neither is the fault of th
 | 2026-10-02 | Clip store: the local object store creates a bucket on the first put, so a wrong bucket name is not caught locally on a write | Seen in the spike. R2 does not create buckets this way, so the difference is stated |
 | 2026-10-02 | Clip store: `exists` must test for a bare 404, not for the named "no such key" error | The spike saw a HEAD of a missing key return 404 with no named error |
 | 2026-10-02 | Clip URLs: the public endpoint must match the browser's host exactly | The spike saw a URL signed for `localhost:8333` refused through `127.0.0.1:8333` |
+| 2026-10-10 | `completed_at` is now `settled_at`; the fallback detector is gone from the examples | Follows the schema changes of the same date |

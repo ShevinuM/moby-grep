@@ -1,6 +1,6 @@
 # Database schema and ledger
 
-This document fixes the tables of the one Postgres database, their keys and constraints, the status transitions of the ledger, the ledger operations in shared code, the database roles and the migration rules. The ingestion unit writes `sources`, `source_status`, `chunks` and `feed_gaps`. The detection unit writes `detections` and `embeddings` and updates the ledger. The search unit queries all of them and owns the vector index. The scorecard unit reads through the read-only role.
+This document fixes the tables of the one Postgres database, their keys and constraints, the status transitions of the ledger, the ledger operations in shared code, the database roles and the migration rules. The ingestion unit writes `sources`, `source_status`, `chunks` and `feed_gaps`. The detection unit writes `detections` and updates the ledger. The foundation's initial migration fills `species`, and the model unit owns the mapping from model labels to species codes. The search unit queries all of them and owns the vector index. The scorecard unit reads through `mobygrep_reader`.
 
 ## Conventions
 
@@ -44,6 +44,63 @@ Mutable state, one row for each source, kept apart from the static description.
 | `last_checked_at` | |
 | `detail` | Optional text |
 
+### `species`
+
+The official list of species. Every other table points here instead of storing species names as text.
+
+#### Example rows
+
+| id | code | scientific_name | common_name | rank |
+|---|---|---|---|---|
+| 1 | `orcinus_orca` | *Orcinus orca* | Killer whale (orca) | species |
+| 2 | `megaptera_nov` | *Megaptera novaeangliae* | Humpback whale | species |
+| 3 | `orca_srkw` | *Orcinus orca* (Southern Resident) | Southern Resident | ecotype |
+| 4 | `unid_baleen` | — | Unidentified baleen | group |
+
+#### Columns
+
+| Column | Purpose |
+|---|---|
+| `id` | Short internal key that other tables point to |
+| `code` | Stable, readable name for code, the API and URLs (`?species=orcinus_orca`). Unique. It does not change between databases, unlike `id` |
+| `scientific_name` | The unambiguous name. Common names vary ("orca", "killer whale") |
+| `common_name` | What people see in Grafana and search results |
+| `rank` | `species`, `ecotype` or `group`: whether a row is a species, a sub-population (orca ecotypes matter for Southern Residents), or a vague group such as "unidentified baleen whale" |
+
+An optional `parent_id` can link an ecotype to its species, so a search for orca also finds Southern Resident calls. Add it only if ecotypes are used.
+
+#### Who points to it
+
+| Column | Meaning |
+|---|---|
+| `detections.species_id` | The detector's guess. Nullable |
+| `chunks.known_species_id` | The known species of reference audio, such as the Watkins library |
+
+- `detections.species_id` is nullable. A call the model cannot place is still stored, as "a whale call, species unknown".
+- `chunks.known_species_id` is a pointer, not free text. Watkins' own names are translated to our codes when the library is loaded. An unknown name stops the load with an error, so no typo gets in.
+
+#### How the list gets filled
+
+- The list is filled on purpose, not on the fly. It ships with the code, as a reviewed data file or a migration.
+- Nothing adds a species automatically because a model or a file used a new name.
+- The model has its own label names. A small mapping translates each model label to our code, one mapping per model version. A new model with different labels needs only a new mapping, not new rows.
+
+#### What it gives you
+
+- **One name per species everywhere.** "All humpback calls" finds Watkins references and live detections alike:
+
+  ```sql
+  SELECT d.*
+  FROM detections d
+  JOIN species s ON s.id = d.species_id
+  WHERE s.code = 'megaptera_nov'
+    AND d.started_at >= '2025-01-01';
+  ```
+
+- **No spelling drift.** The database refuses a species that is not in the list.
+- **One place for display data**, such as names, and later images or descriptions for search results.
+- **Renaming is one update.** Change the common name once and every result shows the new one.
+
 ### `chunks`
 
 The ledger: one row for every chunk ever enqueued.
@@ -56,27 +113,27 @@ The ledger: one row for every chunk ever enqueued.
 | `item_key` | The third segment of the chunk ID, `C` collation. Kept for grouping and display. No index of its own |
 | `started_at` | When the audio starts; null for audio with no known time |
 | `duration_ms` | Optional; positive |
-| `audio_key` | Key of the staged audio |
-| `label` | Optional known species label, for reference audio |
+| `staged_audio_key` | Key of the staged audio |
+| `known_species_id` | Optional foreign key to `species`: the known species of reference audio |
 | `status` | `queued`, `processed` or `failed`; default `queued` |
 | `trace_id` | 32 hexadecimal characters; not null |
 | `created_at` | When the ledger row was written, just before the enqueue |
 | `enqueued_at` | When the message was last added to its stream. Null means the row was written and the add has not succeeded (yet) |
-| `completed_at` | When the chunk reached `processed` or `failed` |
+| `settled_at` | When the chunk reached `processed` or `failed` |
 | `processing_ms` | Optional |
-| `detector` | `primary` or `fallback`; null until processed |
 | `model_version` | Null until processed |
 | `detection_count` | Null until processed; zero means noise |
-| `attempts` | The delivery count when the chunk completed |
-| `worker` | The consumer name that completed it |
+| `attempts` | The delivery count when the chunk settled |
+| `consumer_name` | The consumer name of the worker that settled it |
 | `error_type` | Set when failed |
 | `error` | Set when failed |
 | `audio_purged_at` | When the staged audio was deleted |
 
-- The chunk ID is the primary key, not a surrogate integer with a unique constraint. A unique index on it is needed for idempotency anyway, and this is the table with the most rows (about 60,000 a day for seven live sources), so one index is better than two.
-- The `C` collation makes comparison bytewise, so it cannot change when the locale data of the operating system changes. It also lets a prefix search ("every chunk of this source and folder") use the primary key index (unconfirmed: to be proven by test).
-- CHECK constraints: `completed_at` is set exactly when the status is `processed` or `failed`; `detection_count` is set when the status is `processed`.
-- Indexes: `(source_id, started_at)`; a partial index on `created_at` for rows still `queued`; a partial index on `completed_at` for terminal rows whose audio has not been purged.
+- The chunk ID is the primary key. An integer primary key would also need a unique index on `chunk_id` for the duplicate check, so the table would carry two indexes to identify a row. This is the table with the most rows (about 60,000 a day for seven live sources), so one identity index is better than two.
+- A collation is the rule that Postgres uses to compare text. The `C` collation compares text byte by byte. It does not use the language rules of the operating system. For this reason, an update to the operating system cannot change the order of the index.
+- The `C` collation also lets a prefix search use the primary key index (unconfirmed: to be proven by test). A prefix search finds all chunk IDs that start with the same text, for example all chunks of one source and folder.
+- CHECK constraints: `settled_at` is set exactly when the status is `processed` or `failed`; `detection_count` is set when the status is `processed`.
+- Indexes: `(source_id, started_at)`; a partial index on `created_at` for rows still `queued`; a partial index on `settled_at` for settled rows whose audio has not been purged.
 
 ### `detections`
 
@@ -86,38 +143,36 @@ One row for each detected call.
 |---|---|
 | `id` | Identity primary key |
 | `chunk_id` | Foreign key to `chunks`; the chunk in which the call starts |
+| `call_index` | Position of the call in the sorted calls of its chunk, from 0 |
 | `source_id` | Foreign key to `sources`; repeated here so that queries by time and source need no join |
 | `start_offset_ms` | Position of the start within the chunk |
 | `duration_ms` | Length of the call |
 | `started_at` | Absolute start time; null when the chunk has none |
-| `detector` | `primary` or `fallback` |
+| `species_id` | Optional foreign key to `species`: the detector's guess |
 | `model_version` | |
 | `confidence` | Optional, between 0 and 1 |
+| `embedding` | The fingerprint, `vector(1536)`; not null |
 | `clip_key` | Key in the clip store; optional. Only keys are stored, never URLs (see [storage.md](storage.md#clip-keys)) |
 | `created_at` | |
 
-- Unique on `(chunk_id, start_offset_ms)`. This is a backstop, not the idempotency mechanism: the handler's transaction already guarantees that the detections of a chunk come from exactly one attempt (see [idempotency.md](idempotency.md)).
+- Unique on `(chunk_id, call_index)`. This is a backstop, not the idempotency mechanism: the handler's transaction already guarantees that the detections of a chunk come from exactly one attempt (see [idempotency.md](idempotency.md)).
+- The calls of a chunk are sorted by a fixed rule before they are numbered: by start time, then species code, then end time. One window can hold calls of more than one species:
+
+  | Detector output for `live042` | Sorted | `call_index` |
+  |---|---|---|
+  | window 0–5 s | orca | 0 |
+  | window 0–5 s | humpback | 1 |
+  | window 5–10 s | orca | 2 |
+
 - Indexes on `started_at`, `(source_id, started_at)` and `created_at`.
 - The table does not decide whether a detection is one model window or several merged windows, or whether a call may run past the end of its chunk. Those belong to the model unit and the detection unit, and the shape tolerates all of them.
-
-### `embeddings`
-
-Fingerprints.
-
-| Column | Notes |
-|---|---|
-| `detection_id` | Primary key, and foreign key to `detections` with cascade on delete |
-| `model` | Name of the model that produced it |
-| `embedding` | `vector(1536)` |
-| `created_at` | |
-
-- The foundation creates no approximate-nearest-neighbour index. Exact search is fast enough up to tens of thousands of rows, and the search unit owns the choice of index.
-- A detection made by the fallback detector has no row here.
-- Changing the dimension later means a new migration that drops any vector index, alters the column type and recreates the index, plus the constant. With rows present, every row must be embedded again.
+- The fingerprint is a column of `detections`, not a separate table. Every detection has exactly one fingerprint, because Perch 2.0 is the only detector.
+- The foundation creates no vector index. The search unit creates it in its own migration, before the table holds more than tens of thousands of rows.
+- Changing the dimension later means a new migration that drops any vector index, alters the column type and recreates the index, plus the constant. With rows present, every detection must be embedded again.
 
 ### `feed_gaps`
 
-Stretches where audio is missing.
+Records the periods when we have no audio from a source.
 
 | Column | Notes |
 |---|---|
@@ -135,84 +190,130 @@ Unique on `(source_id, started_at)`.
 
 ## Idempotency keys
 
+- The set of columns that identifies one item in a table. A unique index on these columns stops a repeated write from adding a second copy of it.
+
 | Table | Key |
 |---|---|
 | `sources` | `slug` |
+| `species` | `code` |
 | `chunks` | `chunk_id` |
-| `detections` | `(chunk_id, start_offset_ms)` |
-| `embeddings` | `detection_id` |
+| `detections` | `(chunk_id, call_index)` |
 | `feed_gaps` | `(source_id, started_at)` |
 
 ## Ledger status transitions
 
-| From | To | By |
-|---|---|---|
-| (none) | `queued` | The producer's insert |
-| `queued` | `processed` | A handler's commit |
-| `queued` | `failed` | The consumer, when it dead-letters |
-| `failed` | `queued` | The admin requeue command, only while the staged audio exists |
-| `failed` | `processed` | A late duplicate message that succeeds |
+| Status | Meaning |
+|---|---|
+| `queued` | The chunk waits for a worker, or a worker is processing it |
+| `processed` | A worker finished the chunk and stored its detections |
+| `failed` | The chunk was moved to the dead stream. It will not be retried automatically |
 
-`processed` is final. Processing a `processed` chunk again (for example to replace a fallback detection once the main detector is back) is not supported by the foundation. If the detection unit wants it, it defines an explicit reset that deletes the detections of the chunk and resets the row in one transaction. Such a reset can only work while the staged audio still exists.
+| From | To | When |
+|---|---|---|
+| (no row) | `queued` | The ingestor enqueues the chunk. The row is written before the message goes to Redis |
+| `queued` | `processed` | A worker commits the detections of the chunk |
+| `queued` | `failed` | A worker dead-letters the chunk: a permanent error, or too many deliveries |
+| `failed` | `queued` | A person runs `mobygrep-admin chunks requeue`. This works only while the staged audio exists |
+| `failed` | `processed` | A second message for the same chunk succeeds after the first was dead-lettered. This can happen when the chunk was enqueued twice |
+
+`processed` is final. The foundation cannot process a `processed` chunk again. To support it, the detection unit must add a reset that deletes the detections of the chunk and resets the row in one transaction. The reset works only while the staged audio exists.
 
 ## Ledger operations
 
-The operations are in the module `mobygrep.shared.db.ledger`. Each exists in a sync and an async form.
+The ledger operations are the shared functions that all programs must use to read or change rows in the `chunks` table. They are in the module `mobygrep.shared.db.ledger`. Each exists in a sync form for the worker and the admin command, and an async form for the ingestor.
 
-| Operation | Behaviour |
-|---|---|
-| Insert if absent | Insert a `queued` row with a proposed trace ID; do nothing if the chunk ID exists. Returns the row as it now stands: whether it was created, its status, its trace ID, its `enqueued_at`, and the kind of its source. Resolves the source by slug and fails clearly if the source does not exist |
-| Mark enqueued | Set `enqueued_at` |
-| Mark processed | Update to `processed` with the outcome, **only if the status is not already `processed`**. Returns whether anything changed |
-| Mark failed | Update to `failed` with the error type and text, only if the status is `queued`. Changing no row is a success, not an error |
-| Reset for requeue | Update a `failed` row back to `queued`: clear the completion fields, the error fields and `enqueued_at`, and keep the trace ID. Only if its audio has not been purged. Returns whether anything changed |
-| Get | Return the status of the row, its trace ID and the fields needed to rebuild its message, or none |
-| List purgeable | Rows whose audio is not yet purged, and that are `processed` and completed before one cutoff, or `failed` and completed before another; limited to a batch |
-| Mark audio purged | Set `audio_purged_at` for a set of chunk IDs |
-| List stale queued | Rows still `queued`, **with `enqueued_at` null**, older than a cutoff. For the ingestion unit's re-enqueue sweep |
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    [*] --> queued : Insert if absent<br/>(ingestor)
+    queued --> queued : Mark enqueued<br/>(ingestor)
+    queued --> processed : Mark processed<br/>(worker's handler)
+    queued --> failed : Mark failed<br/>(worker, dead-letter)
+    failed --> queued : Reset for requeue<br/>(admin requeue)
+    failed --> processed : Mark processed<br/>(late duplicate message)
+    processed --> [*]
+
+    note right of queued
+        Get: worker reads the row before processing
+        List stale queued: ingestor's sweep finds rows
+        written but never put on Redis
+    end note
+
+    note right of processed
+        List purgeable + Mark audio purged:
+        purge job deletes staged audio
+        after 48 h (processed) or 7 days (failed).
+        The status does not change.
+    end note
+```
+
+| Operation | In plain words | Who calls it |
+|---|---|---|
+| Insert if absent | Create the chunk's row as `queued`, unless it already exists. Report back what is there | Ingestor, when it enqueues a chunk |
+| Mark enqueued | Record that the message reached Redis (`enqueued_at`) | Ingestor |
+| Get | Read a chunk's row | Worker, before it processes the chunk |
+| Mark processed | Set the status to `processed`, **only if it is not already `processed`**. This stops double processing | Worker's handler |
+| Mark failed | Set the status to `failed` with the error, only if it is still `queued` | Worker, when it dead-letters the chunk |
+| Reset for requeue | Put a `failed` chunk back to `queued`, only if its staged audio still exists | Admin `requeue` command |
+| List purgeable | Find finished chunks whose staged audio is old enough to delete | Purge job |
+| Mark audio purged | Record that the staged audio was deleted | Purge job |
+| List stale queued | Find rows that were written but never put on Redis (a crash between the two steps) | Ingestor's sweep |
 
 ```python
 @dataclass(frozen=True)
 class NewChunk:
     chunk_id: ChunkId
-    audio_key: str
+    staged_audio_key: str
     started_at: datetime | None
     duration_ms: int | None
-    label: str | None = None
+    known_species_id: int | None = None
 
 
 @dataclass(frozen=True)
 class ChunkOutcome:
-    detector: str  # "primary" | "fallback"
     model_version: str
     detection_count: int
     processing_ms: int
     attempts: int
-    worker: str
+    consumer_name: str
 ```
 
-- The kind of the source is read from the `sources` row. It is not passed in by the caller. A kind supplied by the caller would be a second copy of the same fact, and a mismatch would send a chunk to the wrong stream.
+- `NewChunk` and `ChunkOutcome` are the two input forms the ledger operations accept. `NewChunk` holds the values that the ingestor gives to "insert if absent", and `ChunkOutcome` holds the values that a worker gives to "mark processed".
+
+  ```mermaid
+  flowchart LR
+      ingestor([Ingestor]) -- NewChunk --> insert[Insert if absent]
+      insert --> queued[(chunks row<br/>status: queued)]
+
+      worker([Worker]) -- ChunkOutcome --> mark[Mark processed]
+      mark --> processed[(chunks row<br/>status: processed)]
+  ```
+
 - The conditional updates are what make "processing a chunk twice changes nothing" true at the ledger. "Mark processed" locks the row, so the second of two overlapping attempts waits, then finds the row `processed` and changes nothing (unconfirmed: to be proven by test).
-- **Who commits.** The operations that the producer and the consumer call for themselves (insert if absent, mark enqueued, mark failed) commit. **The operations a handler calls take the handler's own session and never commit**, because the handler's transaction must contain "mark processed" and its detection rows together.
+- **Who commits.**
+  - "Insert if absent", "mark enqueued" and "mark failed" each commit their own change. The queue code calls them.
+  - "Mark processed" does not commit. It runs in the transaction of the handler that processes the chunk. The handler then inserts the detections and commits once.
+  - For this reason, the status and the detections of a chunk are saved together, or not at all. If a worker stops before the commit, the chunk stays queued and a retry processes it again.
 
 ## Roles
 
-| Role | Kind | Created by | Privileges |
-|---|---|---|---|
-| The owner (the `POSTGRES_USER` of the image) | Login, superuser | The Postgres image | Owns the schema. Used only to run migrations |
-| `mobygrep_app` | Login | The init script; password from the environment | Read and write rows in every table, use sequences. No schema changes |
-| `mobygrep_readonly` | No login; a group | The init script | Read every table |
-| `grafana_reader` | Login; member of `mobygrep_readonly` | The init script; password from the environment | Read only, with a statement timeout and a connection limit, so that a bad dashboard query cannot starve the programs |
+Each role is named after what it can do.
+
+| Role | Kind | Created by | Privileges | Used by |
+|---|---|---|---|---|
+| `mobygrep_owner` | Login, superuser | The Postgres image (`POSTGRES_USER`) | Owns the schema. Can change tables | The `migrate` service only |
+| `mobygrep_writer` | Login | The init script; password from the environment | Reads and writes rows in every table, uses sequences. No schema changes | The three programs and the admin command |
+| `mobygrep_reader` | Login | The init script; password from the environment | Reads every table. Has a statement timeout and a connection limit, so a slow dashboard query cannot starve the programs | Grafana |
 
 - Roles are created once, when the database is first initialised, by a script in `ops/postgres/initdb/`. Privileges are granted by migrations. Migrations never create or drop roles. **Obligation on the production deployment unit:** create the same three roles in its own runbook.
-- The initial migration grants `mobygrep_app` and `mobygrep_readonly` their privileges on all tables and sets default privileges, so tables created by later migrations are covered without those migrations doing anything.
-- The three programs, and the queue and chunk commands of the admin command, connect as `mobygrep_app`. Only the `migrate` service connects as the owner. The variables are in [configuration.md](configuration.md).
+- The first migration grants `mobygrep_writer` and `mobygrep_reader` their privileges on all existing tables. It also sets default privileges: each table that the owner creates later gives the same privileges automatically. For this reason, a later migration does not grant privileges on its new tables. All migrations must run as `mobygrep_owner`, because default privileges apply only to tables that this role creates.
 
 ## Migration rules
 
 - The Alembic environment and versions ship inside the package (`mobygrep/shared/db/migrations/`), so they are in the Docker image. `mobygrep-admin migrate` applies them.
-- One initial migration creates the `vector` extension, all six tables and the grants.
-- Migrations always run as the database owner.
+- One initial migration creates the `vector` extension, all six tables, the rows of `species` and the grants.
+- Migrations always run as `mobygrep_owner`.
 - **Each unit adds its own migrations on top of the foundation's.**
 - **Migrations are linear, with exactly one head.** Several units add migrations in parallel from the same starting revision. Whoever merges second sets the parent of their migration to the current head before merging. CI fails if there is more than one head.
 
@@ -221,3 +322,7 @@ class ChunkOutcome:
 | Date | Change | Why |
 |---|---|---|
 | 2026-10-02 | First draft | Written after the spike so the other units can plan against it |
+| 2026-10-10 | The fallback detector is removed: no `detector` column, and the fingerprint is a column of `detections` instead of an `embeddings` table | Perch 2.0 is the only detector. During an outage, chunks wait in the queue and are processed at full quality later; an outage longer than the staging buffer ends as a recorded gap. Fallback detections would mix two qualities in one table, have no fingerprint for similarity search, and stay that way because `processed` is final |
+| 2026-10-10 | New `species` table, pointed to by `detections.species_id` and `chunks.known_species_id` | One name per species everywhere, and no spelling drift |
+| 2026-10-10 | `detections` is unique on `(chunk_id, call_index)` instead of `(chunk_id, start_offset_ms)` | One window can hold calls of more than one species |
+| 2026-10-10 | Renamed: `audio_key` to `staged_audio_key`, `label` to `known_species_id`, `completed_at` to `settled_at`, `worker` to `consumer_name`. Roles are `mobygrep_owner`, `mobygrep_writer` and `mobygrep_reader` | Names that say what the column or role holds or does |

@@ -9,7 +9,7 @@ This document fixes how the programs are configured: the naming rule for environ
 - Unknown variables are ignored, because one `.env` file serves all programs.
 - Constructing the settings object is the first thing each program does. A validation error prints which variable is wrong, never its value, and the program exits non-zero before any connection is attempted.
 - Clip store settings deliberately do not use `AWS_*` names, so boto3 never picks up ambient credentials.
-- The Postgres user and password are the same variables for every program, with different values per service: the three programs, and the queue and chunk commands of the admin command, use the application role `mobygrep_app`; the `migrate` service uses the database owner.
+- The Postgres user and password are the same variables for every program, with different values per service: the three programs, and the queue and chunk commands of the admin command, use `mobygrep_writer`; the `migrate` service uses `mobygrep_owner`.
 - The consumer name is the worker's own setting, not part of the queue settings, because the ingestor and the admin command load the queue settings too and have no consumer. It is required and has no default.
 - The stream cap, the block time and the other queue values are settings so that tests can shrink them. The key prefix is a setting so that each test gets its own streams.
 - Durations carry their unit in the name (`_MS`, `_S`, `_HOURS`).
@@ -37,7 +37,7 @@ These are the variables the settings classes read. "On the host" is the value in
 | `MOBYGREP_POSTGRES__HOST` | Postgres host | none; required | `localhost` | `postgres` |
 | `MOBYGREP_POSTGRES__PORT` | Postgres port | 5432 | `5432` | `5432` |
 | `MOBYGREP_POSTGRES__DATABASE` | Database name | none; required | `mobygrep` | same |
-| `MOBYGREP_POSTGRES__USER` | Role | none; required | `mobygrep_app` | same; the `migrate` service uses the owner |
+| `MOBYGREP_POSTGRES__USER` | Role | none; required | `mobygrep_writer` | same; the `migrate` service uses `mobygrep_owner` |
 | `MOBYGREP_POSTGRES__PASSWORD` | Password (secret) | none; required | a local-only value | same; the `migrate` service uses the owner's password |
 | `MOBYGREP_QUEUE_REDIS__URL` | URL of the `redis-queue` instance | none; required | `redis://localhost:6379/0` | `redis://redis-queue:6379/0` |
 | `MOBYGREP_QUEUE_REDIS__SOCKET_TIMEOUT_S` | Socket timeout of the queue clients | 10 s | — | default |
@@ -80,26 +80,26 @@ These are the variables the settings classes read. "On the host" is the value in
 
 Notes on the table:
 
-- **Six variables differ between the host and Compose**, so the `environment:` block of a program service must override them: the Postgres host, the two Redis URLs, the staging root, the clip endpoint and the tracing endpoint. The `migrate` service also overrides the Postgres user and password.
-- **Why the clip store has two endpoints.** A presigned URL is signed for a host name. A URL signed for the in-network name `objectstore:8333` cannot be opened from a browser on the host. The public endpoint therefore stays `http://localhost:8333` in both columns. It must be character for character the host the browser uses: `localhost` and `127.0.0.1` are not interchangeable. In production both endpoints are the same R2 URL, the public one is left unset, and the region is `auto`. See [storage.md](storage.md#clip-urls).
+- **On the host or in Compose.** Six variables differ between the two places, and the `migrate` service overrides two more. See [on-the-host-or-in-compose.md](configuration/notes/on-the-host-or-in-compose.md).
+- **Why the clip store has two endpoints.** One address cannot serve both the programs and the browser. See [why-the-clip-has-two-endpoints.md](configuration/notes/why-the-clip-has-two-endpoints.md).
 - **The ops port** has a default per program and is not in `.env.example`, because one file serves every program run on the host and they would collide. For the API it is the port the API itself serves on.
-- **The staging root** is a path on a shared named volume in Compose. On the host it is a local directory outside the repository. An ingestor on the host with a worker in a container (or the reverse) do not share a staging directory. That combination is not supported.
-- **The socket timeout** (10 s) is deliberately longer than the block time (2 s). A blocking read of 2 s on a client with a 10 s socket timeout returns empty and raises nothing.
+- **The staging root.** The ingestor and the workers must use the same directory, so they run in the same place. See [the-staging-root.md](configuration/notes/the-staging-root.md).
+- **The socket timeout** (10 s) must be longer than the block time (2 s). See [socket-timeout-vs-block-time.md](configuration/notes/socket-timeout-vs-block-time.md).
 - **The consumer name** must be unique among running workers. See [queue.md](queue.md#consumer-names).
 - **Secrets.** The two values marked "a local-only value" are set in `.env.example`, are for the local Compose stack only, and are not written here.
 
 ## Variables not read by the settings classes
 
-These variables are read by the image build, the Compose files, an init script or the test harness, not by a settings class. All names are provisional until the files that use them exist.
+Our programs do not read these variables through their settings. Other tools read them: Docker when it builds the image, the Postgres and Grafana containers, the Postgres init script, and the tests.
 
 | Variable | Read by | Meaning |
 |---|---|---|
 | `MOBYGREP_BUILD_REVISION` | Every program, directly | The git revision, set when the image is built. It goes into the build-info metric; `unknown` when absent. See [observability.md](observability.md#metrics) |
-| `POSTGRES_USER` | The Postgres image; the `migrate` service | The database owner. Used only to run migrations |
+| `POSTGRES_USER` | The Postgres image; the `migrate` service | The database owner, `mobygrep_owner`. Used only to run migrations |
 | `POSTGRES_PASSWORD` | The Postgres image; the `migrate` service | The owner's password (secret) |
 | `POSTGRES_DB` | The Postgres image; Grafana | The database name. Must equal `MOBYGREP_POSTGRES__DATABASE` |
-| `MOBYGREP_APP_PASSWORD` | The Postgres init script, inside the `postgres` container only | The password the script gives the `mobygrep_app` role. Compose fills it from `MOBYGREP_POSTGRES__PASSWORD` |
-| `GRAFANA_READER_PASSWORD` | The Postgres init script; Grafana | The password of the `grafana_reader` role (secret) |
+| `MOBYGREP_WRITER_PASSWORD` | The Postgres init script, inside the `postgres` container only | The password the script gives the `mobygrep_writer` role. Compose fills it from `MOBYGREP_POSTGRES__PASSWORD` |
+| `MOBYGREP_READER_PASSWORD` | The Postgres init script; Grafana | The password of the `mobygrep_reader` role (secret) |
 | `GRAFANA_ADMIN_USER` | Grafana | Grafana's admin login |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana | Grafana's admin password (secret) |
 | `MOBYGREP_TEST_POSTGRES_URL` | The test harness | When set, the tests use that running instance and start no container. It is the owner's URL of an instance whose roles already exist |
@@ -112,3 +112,4 @@ These variables are read by the image build, the Compose files, an init script o
 |---|---|---|
 | 2026-10-02 | First draft | Written after the spike so the other units can plan against it |
 | 2026-10-02 | The public clip endpoint is stated as an exact host match | The spike saw a URL signed for `localhost:8333` refused when it was fetched through `127.0.0.1:8333` |
+| 2026-10-10 | Roles renamed to `mobygrep_owner`, `mobygrep_writer` and `mobygrep_reader`, with `MOBYGREP_WRITER_PASSWORD` and `MOBYGREP_READER_PASSWORD`. Four notes moved to `configuration/notes/` | Each role is named after what it can do. The notes needed diagrams and tables to be clear |

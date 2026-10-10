@@ -10,7 +10,7 @@ Hydrophone streams ──> Ingestor ──> Redis Stream ──> Detection worke
 ```
 
 - The **ingestor** (asyncio) downloads audio in chunks of about 10 seconds and puts one message for each chunk on the queue.
-- **Detection workers** (synchronous, one chunk at a time) take chunks off the queue, run a bioacoustics model (Perch 2.0), and store the audio clip and the fingerprint of each call.
+- **Detection workers** (synchronous, one chunk at a time) take chunks off the queue, run a bioacoustics model (Perch 2.0), and store the audio clip and the fingerprint of each call. Perch 2.0 is the only detector. When it is down, chunks wait in the queue with their audio on staging, and are processed at full quality when it recovers. An outage longer than the staging buffer ends as a recorded gap, not as lower-quality data.
 - The **API** (FastAPI) serves similarity search and queries. Grafana is the only user interface.
 
 All three are programs of one Python package, `mobygrep`, and run on one server under Docker Compose with one Postgres database.
@@ -48,14 +48,10 @@ All three are programs of one Python package, `mobygrep`, and run on one server 
 | [chunk-id.md](chunk-id.md) | | Creates chunk IDs | Reads them; derives clip keys | Displays them; prefix queries | |
 | [configuration.md](configuration.md) | | Adds its settings | Adds its settings; consumer name | Adds its settings | Production values, secrets |
 | [observability.md](observability.md) | | Metrics, logs, health, shutdown, error classes | The same; raises permanent and transient errors | The same; health paths behind the proxy | Dashboards, alerts, metric conventions |
-| [schema.md](schema.md) | Embedding dimension | `sources`, `source_status`, `chunks`, `feed_gaps` | `detections`, `embeddings`, ledger updates | Queries; owns the vector index | Read-only role, Grafana queries, role creation in production |
+| [schema.md](schema.md) | Embedding dimension; mapping of model labels to species codes | `sources`, `source_status`, `chunks`, `feed_gaps` | `detections` with their fingerprints, ledger updates | Queries; owns the vector index | `mobygrep_reader`, Grafana queries, role creation in production |
 | [queue.md](queue.md) | | `enqueue`, back-pressure, the sweep | The handler, consumer names, model load before the first read | | Queue metrics, requeue as the recovery step |
 | [idempotency.md](idempotency.md) | | Repeat enqueue | The handler steps | | Failure drills |
 | [storage.md](storage.md) | Where decoding lives | Writes staged audio; runs the purge; disk floor | Reads staged audio; decodes; writes clips | Clip URLs; redirect route; decodes uploads the same way | R2 bucket and credentials |
-
-## Unconfirmed statements
-
-A statement about how Redis, Postgres or the object store behaves that the design depends on, and that nothing has shown yet, ends with `(unconfirmed: to be proven by test)`. When a test proves it, the tag is removed and a change log row says so; the test is then the record. To list what is still unconfirmed: `git grep -n "(unconfirmed" docs/contracts/`.
 
 ## How a contract changes
 
