@@ -1,6 +1,6 @@
 # Database schema and ledger
 
-This document fixes the tables of the one Postgres database, their keys and constraints, the status transitions of the ledger, the ledger operations in shared code, the database roles and the migration rules. The ingestion unit writes `sources`, `source_status`, `chunks` and `feed_gaps`. The detection unit writes `detections` and updates the ledger. The foundation's initial migration fills `species`, and the model unit owns the mapping from model labels to species codes. The search unit queries all of them and owns the vector index. The scorecard unit reads through `mobygrep_reader`.
+This document fixes the tables of the one Postgres database, their keys and constraints, the status transitions of the ledger, the ledger operations in shared code, the database roles and the migration rules. The ingestion unit writes `sources`, `source_status`, `chunks` and `feed_gaps`. The detection unit writes `detections` and updates the ledger. The foundation creates `species` empty. The search unit fills it from the Watkins species list, decides whether live detections get a species, queries all the tables and owns the vector index. The scorecard unit reads through `mobygrep_reader`.
 
 ## Conventions
 
@@ -50,6 +50,8 @@ The official list of species. Every other table points here instead of storing s
 
 #### Example rows
 
+These rows show the shape of the table only. They are not seed data. The real rows come from the Watkins species list (see [How the list gets filled](#how-the-list-gets-filled)).
+
 | id | code | scientific_name | common_name | rank |
 |---|---|---|---|---|
 | 1 | `orcinus_orca` | *Orcinus orca* | Killer whale (orca) | species |
@@ -73,29 +75,31 @@ An optional `parent_id` can link an ecotype to its species, so a search for orca
 
 | Column | Meaning |
 |---|---|
-| `detections.species_id` | The detector's guess. Nullable |
+| `detections.species_id` | Null in v1. The detector only tells a call from noise and never names a species. The search unit decides whether live calls get one, and how |
 | `chunks.known_species_id` | The known species of reference audio, such as the Watkins library |
 
-- `detections.species_id` is nullable. A call the model cannot place is still stored, as "a whale call, species unknown".
+- `detections.species_id` is nullable, because the detector gives no species. A call is stored as "a whale call, species unknown".
 - `chunks.known_species_id` is a pointer, not free text. Watkins' own names are translated to our codes when the library is loaded. An unknown name stops the load with an error, so no typo gets in.
 
 #### How the list gets filled
 
+- The foundation's migration creates the table with no rows.
+- The search unit adds the rows from the Watkins species list, in its own migration, when it loads the library. Every row has a source.
 - The list is filled on purpose, not on the fly. It ships with the code, as a reviewed data file or a migration.
 - Nothing adds a species automatically because a model or a file used a new name.
-- The model has its own label names. A small mapping translates each model label to our code, one mapping per model version. A new model with different labels needs only a new mapping, not new rows.
 
 #### What it gives you
 
-- **One name per species everywhere.** "All humpback calls" finds Watkins references and live detections alike:
+- **One name per species everywhere.** "All humpback reference clips" is one join:
 
   ```sql
-  SELECT d.*
-  FROM detections d
-  JOIN species s ON s.id = d.species_id
-  WHERE s.code = 'megaptera_nov'
-    AND d.started_at >= '2025-01-01';
+  SELECT c.*
+  FROM chunks c
+  JOIN species s ON s.id = c.known_species_id
+  WHERE s.code = 'megaptera_nov';
   ```
+
+  If the search unit later sets `detections.species_id`, the same join finds live calls.
 
 - **No spelling drift.** The database refuses a species that is not in the list.
 - **One place for display data**, such as names, and later images or descriptions for search results.
@@ -148,7 +152,7 @@ One row for each detected call.
 | `start_offset_ms` | Position of the start within the chunk |
 | `duration_ms` | Length of the call |
 | `started_at` | Absolute start time; null when the chunk has none |
-| `species_id` | Optional foreign key to `species`: the detector's guess |
+| `species_id` | Optional foreign key to `species`. Null in v1 (see [`species`](#species)) |
 | `model_version` | |
 | `confidence` | Optional, between 0 and 1 |
 | `embedding` | The fingerprint, `vector(1536)`; not null |
@@ -156,7 +160,7 @@ One row for each detected call.
 | `created_at` | |
 
 - Unique on `(chunk_id, call_index)`. This is a backstop, not the idempotency mechanism: the handler's transaction already guarantees that the detections of a chunk come from exactly one attempt (see [idempotency.md](idempotency.md)).
-- The calls of a chunk are sorted by a fixed rule before they are numbered: by start time, then species code, then end time. One window can hold calls of more than one species:
+- The calls of a chunk are sorted by a fixed rule before they are numbered: by start time, then species code (a null species sorts first), then end time. One window can hold calls of more than one species:
 
   | Detector output for `live042` | Sorted | `call_index` |
   |---|---|---|
@@ -312,7 +316,7 @@ Each role is named after what it can do.
 ## Migration rules
 
 - The Alembic environment and versions ship inside the package (`mobygrep/shared/db/migrations/`), so they are in the Docker image. `mobygrep-admin migrate` applies them.
-- One initial migration creates the `vector` extension, all six tables, the rows of `species` and the grants.
+- One initial migration creates the `vector` extension, all six tables (`species` with no rows) and the grants.
 - Migrations always run as `mobygrep_owner`.
 - **Each unit adds its own migrations on top of the foundation's.**
 - **Migrations are linear, with exactly one head.** Several units add migrations in parallel from the same starting revision. Whoever merges second sets the parent of their migration to the current head before merging. CI fails if there is more than one head.
@@ -323,6 +327,6 @@ Each role is named after what it can do.
 |---|---|---|
 | 2026-10-02 | First draft | Written after the spike so the other units can plan against it |
 | 2026-10-10 | The fallback detector is removed: no `detector` column, and the fingerprint is a column of `detections` instead of an `embeddings` table | Perch 2.0 is the only detector. During an outage, chunks wait in the queue and are processed at full quality later; an outage longer than the staging buffer ends as a recorded gap. Fallback detections would mix two qualities in one table, have no fingerprint for similarity search, and stay that way because `processed` is final |
-| 2026-10-10 | New `species` table, pointed to by `detections.species_id` and `chunks.known_species_id` | One name per species everywhere, and no spelling drift |
-| 2026-10-10 | `detections` is unique on `(chunk_id, call_index)` instead of `(chunk_id, start_offset_ms)` | One window can hold calls of more than one species |
+| 2026-10-10 | New `species` table, pointed to by `detections.species_id` and `chunks.known_species_id`. The foundation creates it empty; the search unit fills it from the Watkins species list. `detections.species_id` is null in v1 | One name per species everywhere, and no spelling drift. The detector only tells a call from noise, and every row needs a source |
+| 2026-10-10 | `detections` is unique on `(chunk_id, call_index)` instead of `(chunk_id, start_offset_ms)` | Future-proofing: a later model may report calls of more than one species in one window |
 | 2026-10-10 | Renamed: `audio_key` to `staged_audio_key`, `label` to `known_species_id`, `completed_at` to `settled_at`, `worker` to `consumer_name`. Roles are `mobygrep_owner`, `mobygrep_writer` and `mobygrep_reader` | Names that say what the column or role holds or does |

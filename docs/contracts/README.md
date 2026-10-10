@@ -48,7 +48,7 @@ All three are programs of one Python package, `mobygrep`, and run on one server 
 | [chunk-id.md](chunk-id.md) | | Creates chunk IDs | Reads them; derives clip keys | Displays them; prefix queries | |
 | [configuration.md](configuration.md) | | Adds its settings | Adds its settings; consumer name | Adds its settings | Production values, secrets |
 | [observability.md](observability.md) | | Metrics, logs, health, shutdown, error classes | The same; raises permanent and transient errors | The same; health paths behind the proxy | Dashboards, alerts, metric conventions |
-| [schema.md](schema.md) | Embedding dimension; mapping of model labels to species codes | `sources`, `source_status`, `chunks`, `feed_gaps` | `detections` with their fingerprints, ledger updates | Queries; owns the vector index | `mobygrep_reader`, Grafana queries, role creation in production |
+| [schema.md](schema.md) | Embedding dimension | `sources`, `source_status`, `chunks`, `feed_gaps` | `detections` with their fingerprints, ledger updates | Queries; owns the vector index; fills `species` from the Watkins list; decides species on live detections | `mobygrep_reader`, Grafana queries, role creation in production |
 | [queue.md](queue.md) | | `enqueue`, back-pressure, the sweep | The handler, consumer names, model load before the first read | | Queue metrics, requeue as the recovery step |
 | [idempotency.md](idempotency.md) | | Repeat enqueue | The handler steps | | Failure drills |
 | [storage.md](storage.md) | Where decoding lives | Writes staged audio; runs the purge; disk floor | Reads staged audio; decodes; writes clips | Clip URLs; redirect route; decodes uploads the same way | R2 bucket and credentials |
